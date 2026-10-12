@@ -29,6 +29,10 @@ class _CharTokenizer:
     def decode(self, ids):
         return "".join(chr(ord("a") + i) for i in ids)
 
+    # mlx-lm >= 0.32 probes ``encode`` when building a streaming detokenizer.
+    def encode(self, text, add_special_tokens=True):
+        return [ord(char) - ord("a") for char in text]
+
 
 def _log_softmax(values):
     logits = mx.array(values, dtype=mx.float32)
