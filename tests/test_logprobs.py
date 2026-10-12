@@ -12,6 +12,7 @@ from vllm_mlx.logprobs import (  # noqa: E402
     LOGPROB_FLOOR,
     MAX_TOP_LOGPROBS,
     TokenLogprob,
+    TopToken,
     extract_token_logprob,
     record_step_logprobs,
     to_chat_logprobs,
@@ -52,7 +53,7 @@ class TestExtractTokenLogprob:
         assert entry.token_id == 2
         assert entry.token == "c"
         assert entry.logprob == pytest.approx(_reference_logprob(values, 2), abs=1e-5)
-        (best_id, best_token, best_logprob), (next_id, next_token, _) = (
+        (best_id, best_token, best_logprob, _), (next_id, next_token, _, _) = (
             entry.top_logprobs
         )
         assert (best_id, best_token) == (1, "b")
@@ -68,7 +69,7 @@ class TestExtractTokenLogprob:
         entry = extract_token_logprob(row, 1, 3, _CharTokenizer())
 
         assert entry.logprob == LOGPROB_FLOOR
-        top_values = [logprob for _, _, logprob in entry.top_logprobs]
+        top_values = [top.logprob for top in entry.top_logprobs]
         assert all(math.isfinite(value) for value in top_values)
         assert top_values[-1] == LOGPROB_FLOOR
 
@@ -81,6 +82,75 @@ class TestExtractTokenLogprob:
         row = _log_softmax([float(i) for i in range(vocab_size)])
         entry = extract_token_logprob(row, 0, MAX_TOP_LOGPROBS + 30, _CharTokenizer())
         assert len(entry.top_logprobs) == MAX_TOP_LOGPROBS
+
+
+def _split_emoji_tokenizer():
+    """Byte-level BPE whose ids 0 and 1 each hold half of the bytes of 💙."""
+    tokenizers = pytest.importorskip("tokenizers")
+    transformers = pytest.importorskip("transformers")
+
+    byte_level = tokenizers.pre_tokenizers.ByteLevel(
+        add_prefix_space=False, use_regex=False
+    )
+    ((pieces, _),) = byte_level.pre_tokenize_str("💙")
+    vocab = {pieces[:2]: 0, pieces[2:]: 1, "a": 2}
+    backend = tokenizers.Tokenizer(tokenizers.models.BPE(vocab=vocab, merges=[]))
+    backend.decoder = tokenizers.decoders.ByteLevel()
+    backend.add_special_tokens(["<think>\n"])
+    return transformers.PreTrainedTokenizerFast(tokenizer_object=backend)
+
+
+class TestTokenBytes:
+    EMOJI_BYTES = list("💙".encode("utf-8"))
+
+    def test_split_emoji_bytes_join_to_the_character(self):
+        tokenizer = _split_emoji_tokenizer()
+        row = _log_softmax([2.0, 1.0, 0.0, -1.0])
+        first = extract_token_logprob(row, 0, 2, tokenizer)
+        second = extract_token_logprob(row, 1, 2, tokenizer)
+
+        # Each half decodes to U+FFFD on its own.
+        assert set(first.token) == set(second.token) == {"\ufffd"}
+        logprobs = to_chat_logprobs([first, second])
+        content = logprobs.content
+        assert content[0].bytes + content[1].bytes == self.EMOJI_BYTES
+        tops = content[0].top_logprobs
+        assert [top.token_id for top in first.top_logprobs] == [0, 1]
+        assert tops[0].bytes + tops[1].bytes == self.EMOJI_BYTES
+
+    def test_added_tokens_outside_the_byte_map_use_their_text(self):
+        tokenizer = _split_emoji_tokenizer()
+        special_id = tokenizer.convert_tokens_to_ids("<think>\n")
+        row = _log_softmax([0.0] * (special_id + 1))
+        entry = extract_token_logprob(row, special_id, 0, tokenizer)
+
+        assert entry.bytes == list(b"<think>\n")
+
+    def test_ids_past_the_tokenizer_vocab_do_not_raise(self):
+        # Model vocabularies are often padded past the tokenizer's.
+        tokenizer = _split_emoji_tokenizer()
+        entry = extract_token_logprob(_log_softmax([0.0] * 10), 9, 0, tokenizer)
+
+        assert entry.token == ""
+        assert entry.bytes == []
+
+    def test_other_tokenizers_use_the_decoded_text(self):
+        entry = extract_token_logprob(_log_softmax([0.0, 1.0]), 1, 0, _CharTokenizer())
+        assert entry.bytes == [ord("b")]
+
+    def test_replacement_character_without_raw_bytes_is_null(self):
+        class _ReplacementTokenizer:
+            def decode(self, ids):
+                return "\ufffd"
+
+        entry = extract_token_logprob(
+            _log_softmax([0.0, 1.0]), 1, 1, _ReplacementTokenizer()
+        )
+
+        assert entry.bytes is None
+        content = to_chat_logprobs([entry]).content[0]
+        assert content.bytes is None
+        assert content.top_logprobs[0].bytes is None
 
 
 class TestRecordStepLogprobs:
@@ -127,7 +197,7 @@ class TestFormatting:
                 token_id=0,
                 token="Hé",
                 logprob=-0.1,
-                top_logprobs=[(0, "Hé", -0.1), (1, "Hi", -2.5)],
+                top_logprobs=[TopToken(0, "Hé", -0.1), TopToken(1, "Hi", -2.5)],
             ),
             TokenLogprob(token_id=2, token="!", logprob=-0.3),
         ]

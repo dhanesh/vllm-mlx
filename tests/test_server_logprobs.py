@@ -15,10 +15,13 @@ pytestmark = pytest.mark.skipif(
 
 
 def _entry(token_id, token, logprob, top=()):
-    from vllm_mlx.logprobs import TokenLogprob
+    from vllm_mlx.logprobs import TokenLogprob, TopToken
 
     return TokenLogprob(
-        token_id=token_id, token=token, logprob=logprob, top_logprobs=list(top)
+        token_id=token_id,
+        token=token,
+        logprob=logprob,
+        top_logprobs=[TopToken(*alternative) for alternative in top],
     )
 
 
