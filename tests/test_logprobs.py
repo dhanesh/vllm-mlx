@@ -325,6 +325,7 @@ class TestSchedulersRecordLogprobs:
         scheduler = Scheduler.__new__(Scheduler)
         scheduler._actual_tokenizer = _CharTokenizer()
         scheduler._detokenizer_pool = {}
+        scheduler.batch_generator = None
         scheduler.uid_to_request_id = {0: "req-1"}
         scheduler.running = {"req-1": request}
         scheduler.block_aware_cache = None

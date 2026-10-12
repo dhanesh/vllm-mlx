@@ -167,6 +167,8 @@ class RequestOutputCollector:
             completion_tokens=new.completion_tokens,
             new_logprobs=merged_new_logprobs,
             output_logprobs=new.output_logprobs,
+            mtp_drafts=new.mtp_drafts,
+            mtp_accepted=new.mtp_accepted,
         )
 
     def clear(self) -> None:
